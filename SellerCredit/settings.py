@@ -179,3 +179,53 @@ SIMPLE_JWT = {
     "SIGNING_KEY": SECRET_KEY,
 }
 
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__name__))
+LOGS_DIR = os.path.join(PROJECT_ROOT, 'logs/')
+LOGGING = {
+    'version':1,
+    'disable_existing_loggers': False,
+    'loggers':{
+        'django':{
+            'handlers':['warning','error', 'info'],
+            'level':'DEBUG'
+        }
+    },
+    'handlers':{
+        'debug':{
+            'level':'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': f'{LOGS_DIR}/debug.log',
+            'formatter':'simpleRe',
+        },
+        'warning':{
+            'level':'WARNING',
+            # 'class': 'logging.FileHandler',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'when': 'midnight',
+            'filename': f'{LOGS_DIR}/warning.log',
+            'formatter':'simpleRe',
+        },
+        'error':{
+            'level':'ERROR',
+            # 'class': 'logging.FileHandler',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'when': 'midnight',
+            'filename': f'{LOGS_DIR}/error.log',
+            'formatter':'simpleRe',
+        },'info':{
+            'level':'INFO',
+            # 'class': 'logging.FileHandler',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'when': 'midnight',
+            'filename': f'{LOGS_DIR}/info.log',
+            'formatter':'simpleRe',
+        }
+    },
+    'formatters':{
+        'simpleRe': {
+            'format': '{levelname} {asctime} {pathname} {module} {lineno} - {message}',
+            'style': '{',
+        }
+
+    }
+}

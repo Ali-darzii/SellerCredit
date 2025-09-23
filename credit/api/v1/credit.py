@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.db.models import F
 from rest_framework.generics import CreateAPIView
@@ -12,6 +14,7 @@ from credit.serializers import ChangeCreditStatusSerializer, CreateCreditSeriali
 from user.models import Seller, SellerAccount
 from utils.responses import ErrorResponses
 
+logger = logging.getLogger("django")
 
 class CreateCreditView(CreateAPIView):
     serializer_class = CreateCreditSerializer
@@ -35,12 +38,14 @@ class ChangeCreditStatusView(APIView):
             try:
                 credit = Credit.objects.select_for_update().get(pk=credit_id)
                 if credit.status == Credit.Status.APPROVED:
+                    logger.info(f"repetitive approve status in `ChangeCreditStatus` with admin_id--{self.request.user.id}, for credit_id--{credit.id}")
                     return Response(
                         {"detail": "status is already approved"},
-                        status=status.HTTP_406_NOT_ACCEPTABLE,
+                        status=status.HTTP_200_OK,
                     )
 
-                if data["status"] == Credit.Status.REJECTED: 
+                if data["status"] == Credit.Status.REJECTED:
+                    logger.info(f"rejected status in `ChangeCreditStatus` with admin_id--{self.request.user.id}, for credit_id--{credit.id}.")
                     credit.status = Credit.Status.REJECTED
                     credit.save(update_fields=["status"])
                     return Response(CreditSerializer(credit).data, status=status.HTTP_200_OK)
@@ -62,9 +67,14 @@ class ChangeCreditStatusView(APIView):
 
                 credit.status = Credit.Status.APPROVED
                 credit.save(update_fields=["status"])
-
+                
+                logger.info(f"approve status in `ChangeCreditStatus` with admin_id--{self.request.user.id}, for credit_id--{credit.id}.")
                 return Response(CreditSerializer(credit).data, status=status.HTTP_200_OK)
 
-            except (Credit.DoesNotExist, Seller.DoesNotExist, SellerAccount.DoesNotExist):
+            except (Credit.DoesNotExist, Seller.DoesNotExist, SellerAccount.DoesNotExist) as e:
+                logger.warning(f"ERROR in `ChangeCreditStatus` a query didn't exist. \n {e}")
                 return Response(ErrorResponses.OBJECT_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-    
+
+            except Exception as e:
+                logger.critical(f"ERROR in `ChangeCreditStatus` with admin_id--{self.request.user.id}, for credit_id--{credit.id}. \n {e}")
+                return Response(data=ErrorResponses.SOMTHING_WENT_WRONG, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
