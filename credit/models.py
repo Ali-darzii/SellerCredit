@@ -32,7 +32,7 @@ class Transaction(models.Model):
         SALE = ("Sale", "Charge Sale")
     
     account = models.ForeignKey(SellerAccount, on_delete=models.CASCADE, related_name="transactions", null=True)
-    seller = models.ForeignKey(Seller, on_delete=models.CASCADE, related_name="transactions", null=True)
+    seller = models.ForeignKey(Seller, on_delete=models.CASCADE, related_name="transactions")
     change = models.BigIntegerField(validators=[MinValueValidator(1)])
     type = models.CharField(max_length=10, choices=Type.choices)
     created_at = models.DateTimeField(auto_now_add=True)

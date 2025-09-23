@@ -4,18 +4,37 @@ from multiprocessing import Pool
 from django.urls import reverse
 from rest_framework.test import APIClient
 from user.models import Seller, SellerAccount
-from credit.models import Transaction
+from credit.models import Credit, Transaction
 from django.db.models import Sum
 import uuid
 
-@pytest.mark.django_db
-def test_simple_credit_and_sales():
-    client = APIClient()
 
-    seller = Seller.objects.create_user(username="seller", password="test1234")
+@pytest.fixture
+def test_seller_start_up():
+    seller = Seller.objects.create_user(username="seller_1", password="password")
     account = SellerAccount.objects.create(seller=seller, phone_number="09111111111")
+    admin = Seller.objects.create_superuser(username="admin", password="admin")
+    return seller, account, admin
 
-    admin = Seller.objects.create_superuser(username="admin", password="admin1234")
+
+@pytest.mark.django_db
+def test_not_unique_idempotency_must_fail(test_seller_start_up):
+    seller, _, admin = test_seller_start_up
+    credit = Credit.objects.create(seller=seller, amount=123)
+    
+    client = APIClient()
+    client.force_authenticate(user=admin)
+    url_change = reverse("change_credit_status", args=[credit.id])
+    
+    client.patch(url_change, {"status": "approved"}, HTTP_IDEMPOTENCY_KEY="not_unique")
+    response = client.patch(url_change, {"status": "approved"}, HTTP_IDEMPOTENCY_KEY="not_unique")
+    
+    assert response.status_code == 429
+
+@pytest.mark.django_db
+def test_simple_credit_and_sales_balance_check(test_seller_start_up):
+    seller, account, admin = test_seller_start_up
+    client = APIClient()
 
     client.force_authenticate(user=seller)
     url_credit = reverse("create_credit")
@@ -65,12 +84,21 @@ def test_simple_credit_and_sales():
         (200_000, 2000, 120), # more than balance
     ]
 )
-def test_parallel_sales(total_balance, amount, request_number):
+def test_parallel_sales_balance_check(total_balance, amount, request_number, test_seller_start_up):
+    seller, account, _ = test_seller_start_up
     client = APIClient()
 
-    seller = Seller.objects.create_user(username="parallel_seller", password="test1234")
-    account = SellerAccount.objects.create(seller=seller, phone_number="09333333333")
-
+    Credit.objects.create(seller=seller, amount=amount, status=Credit.Status.APPROVED)
+    Transaction.objects.create(
+        seller=seller,
+        account=account,
+        change=total_balance,
+        type=Transaction.Type.INCREASE,
+        idempotency="some_random_number",
+        balance_before=0,
+        balance_after=total_balance
+    )
+    
     seller.total_balance = total_balance
     seller.save()
 
@@ -91,24 +119,24 @@ def test_parallel_sales(total_balance, amount, request_number):
 
     seller.refresh_from_db()
     account.refresh_from_db()
-
-    successful_sales = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).aggregate(
-        total=Sum('change')
-    )['total'] or 0
-
-    # Check balances
     balance = total_balance - (amount * request_number)
     if balance < 0:
         balance = 0
+
+    # Check balances
+    increase_sum = Transaction.objects.filter(seller=seller, type=Transaction.Type.INCREASE).aggregate(total=Sum("change"))["total"] 
+    sell_sum = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).aggregate(total=Sum("change"))["total"] 
+    assert seller.total_balance == increase_sum - sell_sum
+    assert account.balance == sell_sum
     assert seller.total_balance == balance
-    assert seller.total_balance == total_balance - successful_sales
-    assert account.balance == successful_sales
+    
 
     # Ensure idempotency keys are unique
     assert Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).count() == len(set(
         t.idempotency for t in Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE)
     ))
-
+    
+    
     if (total_balance, amount, request_number) == (100_000, 500, 100) or (total_balance, amount, request_number) == (50_000, 1000, 50):
         assert all(r in (200,) for r in results)
     else:

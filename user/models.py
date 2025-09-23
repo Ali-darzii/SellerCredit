@@ -10,8 +10,7 @@ class Seller(AbstractUser):
         constraints = [
             models.CheckConstraint(check=models.Q(total_balance__gte=0), name='total_balance_non_negative')
         ]
-        
-        
+            
     def __str__(self):
         return self.username
 
