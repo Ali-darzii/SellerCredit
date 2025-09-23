@@ -36,7 +36,6 @@ class ChargePhoneView(APIView):
                     logger.info(f"permission denied in `ChargePhone` for seller_id--{user.id}")
                     return Response(data=ErrorResponses.PERMISSION_DENIED, status=status.HTTP_403_FORBIDDEN)    
                 
-                
                 if seller.total_balance < amount:
                     logger.info(f"not enough balance in `ChargePhone` for seller_id--{seller.id}")
                     return Response(data={"detail":"There is not enough balance."}, status=status.HTTP_409_CONFLICT)
