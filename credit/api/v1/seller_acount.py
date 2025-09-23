@@ -65,4 +65,4 @@ class ChargePhoneView(APIView):
             
             except Exception as e:
                 logger.critical(f"ERROR in `ChargePhone` with seller_id--{seller.id}. \n {e}")
-                return Response(data=ErrorResponses.SOMTHING_WENT_WRONG, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                raise

@@ -77,4 +77,4 @@ class ChangeCreditStatusView(APIView):
 
             except Exception as e:
                 logger.critical(f"ERROR in `ChangeCreditStatus` with admin_id--{self.request.user.id}, for credit_id--{credit.id}. \n {e}")
-                return Response(data=ErrorResponses.SOMTHING_WENT_WRONG, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                raise
