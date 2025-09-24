@@ -63,7 +63,7 @@ class ChangeCreditStatusView(APIView):
                 )
 
                 seller.total_balance = F("total_balance") + credit.amount
-                seller.save(update_fields=["total_balance"]) 
+                seller.safe_transaction_save()
 
                 credit.status = Credit.Status.APPROVED
                 credit.save(update_fields=["status"])

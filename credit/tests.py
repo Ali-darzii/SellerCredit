@@ -1,6 +1,5 @@
 import pytest
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from django.urls import reverse
 from rest_framework.test import APIClient
 from user.models import Seller, SellerAccount
@@ -10,7 +9,7 @@ import uuid
 
 
 @pytest.fixture
-def test_seller_start_up():
+def base_seller_data():
     seller = Seller.objects.create_user(username="seller_1", password="password")
     account = SellerAccount.objects.create(seller=seller, phone_number="09111111111")
     admin = Seller.objects.create_superuser(username="admin", password="admin")
@@ -18,8 +17,8 @@ def test_seller_start_up():
 
 
 @pytest.mark.django_db
-def test_not_unique_idempotency_must_fail(test_seller_start_up):
-    seller, _, admin = test_seller_start_up
+def test_not_unique_idempotency_must_fail(base_seller_data):
+    seller, _, admin = base_seller_data
     credit = Credit.objects.create(seller=seller, amount=123)
     
     client = APIClient()
@@ -32,8 +31,8 @@ def test_not_unique_idempotency_must_fail(test_seller_start_up):
     assert response.status_code == 429
 
 @pytest.mark.django_db
-def test_simple_credit_and_sales_balance_check(test_seller_start_up):
-    seller, account, admin = test_seller_start_up
+def test_simple_credit_and_sales_balance_check(base_seller_data):
+    seller, account, admin = base_seller_data
     client = APIClient()
 
     client.force_authenticate(user=seller)
@@ -68,6 +67,12 @@ def test_simple_credit_and_sales_balance_check(test_seller_start_up):
     # check total balance from trancation
     assert Transaction.objects.filter(seller=seller).count() == 61  # one increase with 60 deacreace
     
+    # Ensure idempotency keys are unique
+    assert Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).count() == len(set(
+        t.idempotency for t in Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE)
+    ))
+    
+    
     increase_sum = Transaction.objects.filter(seller=seller, type=Transaction.Type.INCREASE).aggregate(total=Sum('change'))['total'] 
     sell_sum = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).aggregate(total=Sum('change'))['total'] 
     assert seller.total_balance == increase_sum - sell_sum
@@ -84,8 +89,8 @@ def test_simple_credit_and_sales_balance_check(test_seller_start_up):
         (200_000, 2000, 120), # more than balance
     ]
 )
-def test_parallel_sales_balance_check(total_balance, amount, request_number, test_seller_start_up):
-    seller, account, _ = test_seller_start_up
+def test_parallel_sales_balance_check(total_balance, amount, request_number, base_seller_data):
+    seller, account, _ = base_seller_data
     client = APIClient()
 
     Credit.objects.create(seller=seller, amount=amount, status=Credit.Status.APPROVED)
@@ -143,65 +148,83 @@ def test_parallel_sales_balance_check(total_balance, amount, request_number, tes
         assert all(r in (200, 409) for r in results)
     
     
-def process_worker(args):
-    seller_username, phone_number, amount, index = args
-    from rest_framework.test import APIClient
-    from user.models import Seller
+    
+@pytest.mark.django_db(transaction=True)
+def test_2_parallel_sales_balance_check(base_seller_data):
+    seller1, account1, _ = base_seller_data
 
-    client = APIClient()
-    user = Seller.objects.get(username=seller_username)
-    client.force_authenticate(user=user)
-    url_charge = "/api/v1/credit/account/charge/"  # or use reverse if accessible
-    response = client.post(
-        url_charge,
-        {"phone_number": phone_number, "amount": amount},
-        HTTP_IDEMPOTENCY_KEY=f"{uuid.uuid4()}_{index}_{uuid.uuid4()}"
+    seller2 = Seller.objects.create_user(
+        username="seller2",
+        password="password123",
+        total_balance=0,
     )
-    return response.status_code
+    account2 = seller2.accounts.create(phone_number="09120000002")
 
-# @pytest.mark.django_db(transaction=True)
-# @pytest.mark.parametrize(
-#     "total_balance, amount, request_number",
-#     [
-#         (100_000, 500, 100),
-#         (50_000, 1000, 50),
-#         (200_000, 2000, 120),
-#     ]
-# )
-# def test_parallel_sales_processes(total_balance, amount, request_number):
-#     from user.models import Seller, SellerAccount
-#     from credit.models import Transaction
-#     from django.db.models import Sum
-#     from multiprocessing import Pool
-#     import uuid
+    seller_params = [
+        (seller1, account1, 100_000, 500, 100),  # seller1
+        (seller2, account2, 50_000, 1000, 50),   # seller2
+    ]
 
-#     seller = Seller.objects.create_user(username="process_seller", password="test1234")
-#     account = SellerAccount.objects.create(seller=seller, phone_number="09444444444")
-#     seller.total_balance = total_balance
-#     seller.save()
+    url_charge = reverse("charge_phone")
 
-#     # prepare args for each request
-#     args_list = [(seller.username, account.phone_number, amount, i) for i in range(request_number)]
+    def setup_seller(seller, account, total_balance, amount):
+        Credit.objects.create(seller=seller, amount=amount, status=Credit.Status.APPROVED)
+        Transaction.objects.create(
+            seller=seller,
+            account=account,
+            change=total_balance,
+            type=Transaction.Type.INCREASE,
+            idempotency=f"init_{seller.id}",
+            balance_before=0,
+            balance_after=total_balance,
+        )
+        seller.total_balance = total_balance
+        seller.save()
 
-#     with Pool(processes=10) as pool:
-#         results = pool.map(process_worker, args_list)
+    def make_charge_request(seller, account, amount, number):
+        client = APIClient()
+        client.force_authenticate(user=seller)
+        return client.post(
+            url_charge,
+            {"phone_number": account.phone_number, "amount": amount},
+            HTTP_IDEMPOTENCY_KEY=f"{uuid.uuid4()}_{seller.id}_{number}",
+        ).status_code
 
-#     seller.refresh_from_db()
-#     account.refresh_from_db()
+    # Setup both sellers
+    for seller, account, total_balance, amount, _ in seller_params:
+        setup_seller(seller, account, total_balance, amount)
 
-#     successful_sales = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).aggregate(
-#         total=Sum('change')
-#     )['total'] or 0
+    with ThreadPoolExecutor(max_workers=40) as executor:
+        futures = []
+        for seller, account, total_balance, amount, request_number in seller_params:
+            for i in range(request_number):
+                futures.append(executor.submit(make_charge_request, seller, account, amount, i))
+        results = [f.result() for f in as_completed(futures)]
 
-#     assert seller.total_balance == total_balance - successful_sales
-#     assert account.balance == successful_sales
+    for seller, account, total_balance, amount, request_number in seller_params:
+        seller.refresh_from_db()
+        account.refresh_from_db()
 
-#     # Ensure idempotency keys are unique
-#     assert Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).count() == len(set(
-#         t.idempotency for t in Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE)
-#     ))
+        expected_balance = total_balance - (amount * request_number)
+        if expected_balance < 0:
+            expected_balance = 0
 
-#     if (total_balance, amount, request_number) in [(100_000, 500, 100), (50_000, 1000, 50)]:
-#         assert all(r in (200,) for r in results)
-#     else:
-#         assert all(r in (200, 409) for r in results)
+        increase_sum = Transaction.objects.filter(
+            seller=seller, type=Transaction.Type.INCREASE
+        ).aggregate(total=Sum("change"))["total"]
+        sell_sum = Transaction.objects.filter(
+            seller=seller, type=Transaction.Type.SALE
+        ).aggregate(total=Sum("change"))["total"]
+
+        assert seller.total_balance == increase_sum - sell_sum
+        assert account.balance == sell_sum
+        assert seller.total_balance == expected_balance
+
+        # Ensure idempotency keys are unique
+        sales = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE)
+        assert sales.count() == len(set(s.idempotency for s in sales))
+
+    # For seller1 and seller2 together → expect mix of 200 / 409 depending on balance exhaustion
+    assert all(r in (200, 409) for r in results)
+    
+    

@@ -51,10 +51,10 @@ class ChargePhoneView(APIView):
                 )
                 
                 seller.total_balance = F("total_balance") - amount
-                seller.save(update_fields=["total_balance"])
+                seller.safe_transaction_save()
                 
                 account.balance = F("balance") + amount
-                account.save(update_fields=["balance"])
+                account.safe_transaction_save()
                 logger.info(f"`ChargePhone` amount--{amount} for seller_id--{seller.id} was successfull.")
                 return Response(data={"detail":"Transaction was successfull."})
             
