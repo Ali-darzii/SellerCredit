@@ -1,10 +1,11 @@
 import pytest
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.urls import reverse
 from rest_framework.test import APIClient
 from user.models import Seller, SellerAccount
 from credit.models import Credit, Transaction
 from django.db.models import Sum
+from django.db import close_old_connections, connection
 import uuid
 
 
@@ -77,8 +78,6 @@ def test_simple_credit_and_sales_balance_check(base_seller_data):
     sell_sum = Transaction.objects.filter(seller=seller, type=Transaction.Type.SALE).aggregate(total=Sum('change'))['total'] 
     assert seller.total_balance == increase_sum - sell_sum
     
-    
-
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize(
@@ -107,10 +106,12 @@ def test_parallel_sales_balance_check(total_balance, amount, request_number, bas
     seller.total_balance = total_balance
     seller.save()
 
-    client.force_authenticate(user=seller)
     url_charge = reverse("charge_phone")
 
     def make_charge_request(number: int):
+        close_old_connections()
+        client = APIClient()
+        client.force_authenticate(user=seller)
         response = client.post(
             url_charge,
             {"phone_number": account.phone_number, "amount": amount},
