@@ -5,7 +5,7 @@ from rest_framework.test import APIClient
 from user.models import Seller, SellerAccount
 from credit.models import Credit, Transaction
 from django.db.models import Sum
-from django.db import close_old_connections, connection
+from django.db import close_old_connections
 import uuid
 
 
@@ -183,6 +183,7 @@ def test_2_parallel_sales_balance_check(base_seller_data):
         seller.save()
 
     def make_charge_request(seller, account, amount, number):
+        close_old_connections()
         client = APIClient()
         client.force_authenticate(user=seller)
         return client.post(
